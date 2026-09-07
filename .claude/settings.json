@@ -1,0 +1,11 @@
+{
+  "enabledPlugins": {
+    "pyright-lsp@claude-plugins-official": true,
+    "code-review@claude-plugins-official": true,
+    "pr-review-toolkit@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true,
+    "claude-security@claude-plugins-official": true,
+    "logfire@claude-plugins-official": true,
+    "42crunch-api-security-testing@claude-plugins-official": true
+  }
+}
