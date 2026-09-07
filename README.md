@@ -39,6 +39,68 @@ docker compose up --build
 El contenedor corre como usuario no-root, expone el puerto 8000 y tiene un healthcheck sobre
 `GET /health`.
 
+## Correr como servicio systemd en Ubuntu (sin Docker)
+
+El unit file esta en `deploy/ocr-api-gateway.service`. Asume que el proyecto vive en
+`/opt/ocr-api-gateway` y corre bajo un usuario dedicado `ocrapi` — ajusta ambos si usas otros.
+
+```bash
+# 1. uv disponible para todo el sistema (no solo tu usuario)
+curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+
+# 2. usuario de sistema dedicado, sin login ni home real
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin ocrapi
+
+# 3. copiar el proyecto (clonalo o rsync-ealo desde donde lo tengas)
+sudo mkdir -p /opt/ocr-api-gateway
+sudo cp -r . /opt/ocr-api-gateway   # corriendo esto desde la raiz del repo
+cd /opt/ocr-api-gateway
+
+# 4. dependencias de produccion (sin dev), usando el lockfile tal cual
+sudo uv sync --frozen --no-dev
+
+# 5. variables de entorno reales, solo legibles por el dueno
+sudo cp .env.example .env
+sudo nano .env   # completar OCR_SPACE_API_KEY y lo que quieras ajustar
+sudo chmod 600 .env
+
+# 6. el servicio corre como ocrapi: le pasamos la propiedad de todo el arbol
+sudo chown -R ocrapi:ocrapi /opt/ocr-api-gateway
+
+# 7. instalar y arrancar el servicio
+sudo cp deploy/ocr-api-gateway.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ocr-api-gateway
+```
+
+Verificar que levanto bien:
+
+```bash
+sudo systemctl status ocr-api-gateway
+curl http://localhost:8000/health
+journalctl -u ocr-api-gateway -f   # logs en vivo (structlog en JSON)
+```
+
+**Actualizar a una nueva version:**
+
+```bash
+cd /opt/ocr-api-gateway
+sudo -u ocrapi git pull   # o el mecanismo que uses para traer el codigo nuevo
+sudo -u ocrapi uv sync --frozen --no-dev
+sudo systemctl restart ocr-api-gateway
+```
+
+**Notas:**
+
+- El unit file corre `uvicorn` directo desde `.venv/bin/uvicorn` (no `uv run`), asi que no necesita
+  `uv` en el `PATH` de systemd — solo `uv sync` lo necesita al desplegar.
+- El servicio queda con el filesystem en solo lectura (`ProtectSystem=strict`) salvo un `/tmp`
+  privado, porque la app nunca escribe en disco (la compresion es toda en memoria).
+- Por default escucha en `0.0.0.0:8000` sin TLS. Si el servidor esta expuesto a internet, ponelo
+  detras de un reverse proxy (nginx/Caddy) que termine TLS y le pegue a `127.0.0.1:8000`, y con
+  `ufw` dejar cerrado el 8000 hacia afuera. Eso no esta incluido aca porque depende de tu dominio/
+  certificados — avisame si queres que lo arme.
+
 ## Variables de entorno
 
 | Variable | Default | Descripcion |
