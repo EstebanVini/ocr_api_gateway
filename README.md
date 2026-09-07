@@ -48,26 +48,29 @@ El unit file esta en `deploy/ocr-api-gateway.service`. Asume que el proyecto viv
 # 1. uv disponible para todo el sistema (no solo tu usuario)
 curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
-# 2. usuario de sistema dedicado, sin login ni home real
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin ocrapi
+# 2. usuario de sistema dedicado. Le damos un $HOME real dentro de su propio
+#    directorio (aunque sea un usuario "system"): uv necesita *algun* $HOME
+#    donde instalar el interprete de Python que administra, y tiene que ser
+#    uno al que este mismo usuario tenga acceso (ver nota de la Nota 1 abajo).
+sudo useradd --system --home-dir /opt/ocr-api-gateway --shell /usr/sbin/nologin ocrapi
 
 # 3. copiar el proyecto (clonalo o rsync-ealo desde donde lo tengas)
 sudo mkdir -p /opt/ocr-api-gateway
 sudo cp -r . /opt/ocr-api-gateway   # corriendo esto desde la raiz del repo
+sudo chown -R ocrapi:ocrapi /opt/ocr-api-gateway
 cd /opt/ocr-api-gateway
 
-# 4. dependencias de produccion (sin dev), usando el lockfile tal cual
-sudo uv sync --frozen --no-dev
+# 4. dependencias de produccion (sin dev), usando el lockfile tal cual.
+#    IMPORTANTE: correr esto como ocrapi, NUNCA como root/sudo directo — ver Nota 1.
+sudo -H -u ocrapi uv sync --frozen --no-dev
 
 # 5. variables de entorno reales, solo legibles por el dueno
 sudo cp .env.example .env
 sudo nano .env   # completar OCR_SPACE_API_KEY y lo que quieras ajustar
+sudo chown ocrapi:ocrapi .env
 sudo chmod 600 .env
 
-# 6. el servicio corre como ocrapi: le pasamos la propiedad de todo el arbol
-sudo chown -R ocrapi:ocrapi /opt/ocr-api-gateway
-
-# 7. instalar y arrancar el servicio
+# 6. instalar y arrancar el servicio
 sudo cp deploy/ocr-api-gateway.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now ocr-api-gateway
@@ -81,21 +84,42 @@ curl http://localhost:8000/health
 journalctl -u ocr-api-gateway -f   # logs en vivo (structlog en JSON)
 ```
 
+Generar la primera API key (la DB vive en `/var/lib/ocr-api-gateway/api_keys.db`, creada por
+`StateDirectory=` del unit file):
+
+```bash
+sudo -H -u ocrapi API_KEYS_DB_PATH=/var/lib/ocr-api-gateway/api_keys.db \
+  /opt/ocr-api-gateway/.venv/bin/python /opt/ocr-api-gateway/scripts/manage_api_keys.py \
+  create "primer cliente"
+```
+
 **Actualizar a una nueva version:**
 
 ```bash
 cd /opt/ocr-api-gateway
-sudo -u ocrapi git pull   # o el mecanismo que uses para traer el codigo nuevo
-sudo -u ocrapi uv sync --frozen --no-dev
+sudo -H -u ocrapi git pull   # o el mecanismo que uses para traer el codigo nuevo
+sudo -H -u ocrapi uv sync --frozen --no-dev
 sudo systemctl restart ocr-api-gateway
 ```
 
 **Notas:**
 
+- **Nota 1 — nunca corras `uv sync` como root para este setup.** `uv` instala y administra su
+  propio interprete de Python bajo `$HOME/.local/share/uv/python/...` del usuario que lo ejecuta.
+  Si corres `uv sync` como `root`, el venv termina con un `.venv/bin/python` que apunta a un
+  interprete dentro de `/root/...` — y como el servicio corre como `ocrapi` (sin acceso a `/root`,
+  y ademas bloqueado explicitamente por `ProtectHome=true` en el unit file), systemd falla al
+  arrancar con `Failed to execute .../uvicorn: Permission denied` (`status=203/EXEC`), aunque
+  correrlo a mano como root funcione perfecto. Por eso el usuario `ocrapi` se crea con
+  `--home-dir /opt/ocr-api-gateway` y el `uv sync` se corre con `sudo -H -u ocrapi` — asi el
+  interprete que instala uv queda dentro del propio arbol de `ocrapi`, accesible para el mismo.
+  Si ya te paso esto: `sudo rm -rf .venv` y repeti el paso 4 corriendolo como `ocrapi`.
 - El unit file corre `uvicorn` directo desde `.venv/bin/uvicorn` (no `uv run`), asi que no necesita
   `uv` en el `PATH` de systemd — solo `uv sync` lo necesita al desplegar.
 - El servicio queda con el filesystem en solo lectura (`ProtectSystem=strict`) salvo un `/tmp`
-  privado, porque la app nunca escribe en disco (la compresion es toda en memoria).
+  privado y el `StateDirectory=ocr-api-gateway` del unit file (systemd crea y le da permisos de
+  escritura a `/var/lib/ocr-api-gateway`, que es donde vive la DB sqlite de API keys). La
+  compresion sigue siendo toda en memoria — la unica escritura real a disco es esa DB.
 - Por default escucha en `0.0.0.0:8000` sin TLS. Si el servidor esta expuesto a internet, ponelo
   detras de un reverse proxy (nginx/Caddy) que termine TLS y le pegue a `127.0.0.1:8000`, y con
   `ufw` dejar cerrado el 8000 hacia afuera. Eso no esta incluido aca porque depende de tu dominio/
@@ -120,6 +144,69 @@ sudo systemctl restart ocr-api-gateway
 | `OCR_MAX_INPUT_BYTES` | `20971520` (20 MB) | Tope de subida cruda antes de intentar comprimir. |
 | `LOG_LEVEL` | `INFO` | Nivel de logging (JSON estructurado a stdout). |
 | `UVICORN_WORKERS` | `2` | Solo aplica corriendo con Docker/docker-compose. |
+| `API_KEYS_DB_PATH` | `data/api_keys.db` | DB sqlite donde se guardan las API keys. Se crea sola si no existe. |
+| `RATE_LIMIT_REQUESTS` | `30` | Peticiones permitidas por API key dentro de la ventana (ver "Rate limiting"). |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Tamano de la ventana deslizante del rate limit, en segundos. |
+
+## Autenticacion (API keys)
+
+Todos los endpoints bajo `/api/v1` (`POST /ocr`, `GET /ocr/limits`) exigen un header
+`X-API-Key` valido. `GET /health` queda publico (lo usan los healthchecks de Docker/systemd).
+
+Las API keys **no se generan via HTTP** - solo con el script de consola
+`scripts/manage_api_keys.py`, y se guardan en la DB sqlite de `API_KEYS_DB_PATH` (solo se
+persiste el hash SHA-256 de cada key, nunca el valor en texto plano).
+
+```bash
+# generar una key nueva (el valor solo se muestra una vez, en este momento)
+uv run scripts/manage_api_keys.py create "nombre del cliente"
+
+# listar las keys registradas (id, nombre, si esta activa, ultimo uso)
+uv run scripts/manage_api_keys.py list
+
+# revocar / reactivar una key por id
+uv run scripts/manage_api_keys.py revoke <id>
+uv run scripts/manage_api_keys.py activate <id>
+```
+
+Corriendo con Docker: `docker compose exec ocr-api-gateway python scripts/manage_api_keys.py create "nombre"`.
+Corriendo como servicio systemd: `sudo -u ocrapi API_KEYS_DB_PATH=/var/lib/ocr-api-gateway/api_keys.db /opt/ocr-api-gateway/.venv/bin/python /opt/ocr-api-gateway/scripts/manage_api_keys.py create "nombre"`.
+
+Uso desde el cliente:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/ocr \
+  -H "X-API-Key: ocrgw_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
+  -F "file=@pasaporte.jpg"
+```
+
+Sin el header (o con una key invalida/revocada) el servicio responde 401 con
+`MISSING_API_KEY` o `INVALID_API_KEY` respectivamente.
+
+## Rate limiting
+
+Cada API key tiene un limite de `RATE_LIMIT_REQUESTS` peticiones por `RATE_LIMIT_WINDOW_SECONDS`
+(ventana deslizante, default 30 peticiones / 60 segundos) sobre `/api/v1/*`. Al superarlo, el
+servicio responde **429** con `RATE_LIMIT_EXCEEDED` y un header `Retry-After` con los segundos
+a esperar.
+
+**Limitacion conocida:** el contador vive en memoria de cada proceso. Corriendo con varios
+`UVICORN_WORKERS` (el default es 2), cada worker lleva su propio conteo — el techo global
+efectivo terminan siendo aproximadamente `workers * RATE_LIMIT_REQUESTS` peticiones por ventana,
+no un limite exacto compartido. Para un limite global estricto entre procesos habria que sumar
+un backend compartido (ej. Redis), pero para el volumen de este gateway no se justifica; si hace
+falta ese limite exacto, correr con un solo worker.
+
+## Concurrencia
+
+Las rutas son `async` y el cliente HTTP hacia OCR.space (`httpx.AsyncClient`) es asincrono, asi
+que multiples peticiones en vuelo no se bloquean entre si esperando la respuesta de OCR.space.
+La compresion (busqueda de calidad JPEG, rasterizado de PDF, etc.) es CPU-bound y puede tardar
+de cientos de milisegundos a varios segundos: se corre en el threadpool de Starlette
+(`run_in_threadpool`) para no bloquear el event loop mientras corre, permitiendo que otras
+peticiones sigan avanzando en paralelo dentro del mismo worker. La verificacion de la API key
+(consulta sqlite) tambien corre en el threadpool por el mismo motivo. Para escalar mas alla de
+un solo proceso, subir `UVICORN_WORKERS` (o correr varias replicas detras de un load balancer).
 
 ## API
 
@@ -146,6 +233,7 @@ Ejemplo:
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/ocr \
+  -H "X-API-Key: ocrgw_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
   -F "file=@pasaporte.jpg" \
   -F "language=spa" \
   -F "ocr_engine=2"
@@ -283,6 +371,9 @@ Todos los errores del servicio devuelven el mismo shape:
 | `OCR_SPACE_INVALID_RESPONSE` | 502 | OCR.space devolvio un body que no es JSON valido. |
 | `OCR_SPACE_ERROR` | 502 | `IsErroredOnProcessing=true` o `OCRExitCode` en (3, 4). |
 | `VALIDATION_ERROR` | 422 | La peticion no cumple el formato esperado (validacion de FastAPI/Pydantic). |
+| `MISSING_API_KEY` | 401 | La peticion no incluye el header `X-API-Key`. |
+| `INVALID_API_KEY` | 401 | La API key no existe o fue revocada. |
+| `RATE_LIMIT_EXCEEDED` | 429 | Se supero `RATE_LIMIT_REQUESTS` para esa API key en la ventana actual. |
 | `INTERNAL_ERROR` | 500 | Cualquier otro error no manejado. |
 
 ## Estrategia de compresion
@@ -330,6 +421,11 @@ OCR.space un archivo que ya se sabe que va a ser rechazado.
   aplica unicamente a PDF.
 - **`isSearchablePdfHideTextLayer`**: OCR.space lo requiere siempre en la peticion pero el
   endpoint no expone un campo de cliente para el; se manda fijo en `false`.
+- **Rate limit por proceso, no global:** ver la nota en "Rate limiting" — con varios workers
+  el techo efectivo es aproximadamente `workers * RATE_LIMIT_REQUESTS`, no un limite exacto.
+- **DB de API keys en sqlite:** correcto para el volumen de este gateway (se abre con
+  `journal_mode=WAL` y `busy_timeout`), pero no esta pensado para un numero grande de
+  replicas escribiendo `last_used_at` concurrentemente contra el mismo archivo.
 
 ## Testing
 

@@ -19,10 +19,13 @@ RUN useradd --system --create-home --home-dir /home/app app
 WORKDIR /app
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --from=builder --chown=app:app /app/app /app/app
+COPY --chown=app:app scripts ./scripts
+RUN mkdir -p /app/data && chown app:app /app/data
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    UVICORN_WORKERS=2
+    UVICORN_WORKERS=2 \
+    API_KEYS_DB_PATH=/app/data/api_keys.db
 
 USER app
 

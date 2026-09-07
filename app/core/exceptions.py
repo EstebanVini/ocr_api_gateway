@@ -18,10 +18,17 @@ class ServiceError(Exception):
     error_code: ClassVar[ErrorCode] = ErrorCode.INTERNAL_ERROR
     http_status: ClassVar[int] = status.HTTP_500_INTERNAL_SERVER_ERROR
 
-    def __init__(self, message: str, *, details: Mapping[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.details = dict(details) if details else {}
+        self.headers = dict(headers) if headers else {}
 
 
 class UnsupportedFileTypeError(ServiceError):
@@ -62,6 +69,21 @@ class OcrSpaceInvalidResponseError(OcrSpaceError):
     error_code = ErrorCode.OCR_SPACE_INVALID_RESPONSE
 
 
+class MissingApiKeyError(ServiceError):
+    error_code = ErrorCode.MISSING_API_KEY
+    http_status = status.HTTP_401_UNAUTHORIZED
+
+
+class InvalidApiKeyError(ServiceError):
+    error_code = ErrorCode.INVALID_API_KEY
+    http_status = status.HTTP_401_UNAUTHORIZED
+
+
+class RateLimitExceededError(ServiceError):
+    error_code = ErrorCode.RATE_LIMIT_EXCEEDED
+    http_status = status.HTTP_429_TOO_MANY_REQUESTS
+
+
 def _error_json(error_code: ErrorCode, message: str, details: dict[str, Any]) -> dict[str, Any]:
     return ErrorResponse(
         error=ErrorDetail(code=error_code, message=message, details=details)
@@ -81,6 +103,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.http_status,
             content=_error_json(exc.error_code, exc.message, exc.details),
+            headers=exc.headers or None,
         )
 
     @app.exception_handler(RequestValidationError)

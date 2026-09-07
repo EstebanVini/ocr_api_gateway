@@ -3,6 +3,8 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.database import DEFAULT_DB_PATH
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -22,6 +24,10 @@ class Settings(BaseSettings):
     ocr_min_image_longest_side_px: int = Field(1500, alias="OCR_MIN_IMAGE_LONGEST_SIDE_PX", gt=0)
     ocr_min_image_scale_factor: float = Field(0.5, alias="OCR_MIN_IMAGE_SCALE_FACTOR", gt=0, le=1)
     ocr_max_retries: int = Field(2, alias="OCR_MAX_RETRIES", ge=0)
+
+    api_keys_db_path: str = Field(DEFAULT_DB_PATH, alias="API_KEYS_DB_PATH")
+    rate_limit_requests: int = Field(30, alias="RATE_LIMIT_REQUESTS", gt=0)
+    rate_limit_window_seconds: float = Field(60.0, alias="RATE_LIMIT_WINDOW_SECONDS", gt=0)
 
 
 @lru_cache

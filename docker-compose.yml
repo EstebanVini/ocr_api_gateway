@@ -5,6 +5,8 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    volumes:
+      - api_keys_data:/app/data
     environment:
       OCR_SPACE_ENDPOINT: ${OCR_SPACE_ENDPOINT:-https://api.ocr.space/parse/image}
       OCR_MAX_UPLOAD_BYTES: ${OCR_MAX_UPLOAD_BYTES:-1048576}
@@ -20,9 +22,15 @@ services:
       OCR_MAX_INPUT_BYTES: ${OCR_MAX_INPUT_BYTES:-20971520}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+      API_KEYS_DB_PATH: ${API_KEYS_DB_PATH:-/app/data/api_keys.db}
+      RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-30}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 5s
       start_period: 10s
       retries: 3
+
+volumes:
+  api_keys_data:

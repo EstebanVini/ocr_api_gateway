@@ -29,10 +29,12 @@ def _success_payload(**overrides: Any) -> dict[str, Any]:
 
 
 @pytest.fixture
-async def client() -> AsyncIterator[httpx.AsyncClient]:
+async def client(test_api_key: str) -> AsyncIterator[httpx.AsyncClient]:
     async with app.router.lifespan_context(app):
         transport = ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test", headers={"X-API-Key": test_api_key}
+        ) as ac:
             yield ac
     app.dependency_overrides.clear()
 
@@ -213,6 +215,81 @@ def test_missing_api_key_fails_settings_construction(monkeypatch: pytest.MonkeyP
     monkeypatch.delenv("OCR_SPACE_API_KEY", raising=False)
     with pytest.raises(Exception):  # noqa: B017 - pydantic ValidationError
         Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+async def test_request_without_api_key_header_returns_401() -> None:
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.get("/api/v1/ocr/limits")
+
+    assert resp.status_code == 401
+    body = resp.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "MISSING_API_KEY"
+
+
+async def test_request_with_invalid_api_key_returns_401() -> None:
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test", headers={"X-API-Key": "not-a-real-key"}
+        ) as ac:
+            resp = await ac.get("/api/v1/ocr/limits")
+
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "INVALID_API_KEY"
+
+
+async def test_request_with_revoked_api_key_returns_401(_api_keys_db_path: str) -> None:
+    from app.services.api_keys import create_api_key, revoke_api_key
+
+    key_id, raw_key = create_api_key(_api_keys_db_path, "revoked-key-test")
+    revoke_api_key(_api_keys_db_path, key_id)
+
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test", headers={"X-API-Key": raw_key}
+        ) as ac:
+            resp = await ac.get("/api/v1/ocr/limits")
+
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "INVALID_API_KEY"
+
+
+async def test_health_endpoint_does_not_require_api_key() -> None:
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.get("/health")
+
+    assert resp.status_code == 200
+
+
+async def test_rate_limit_exceeded_returns_429(test_api_key: str) -> None:
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setenv("RATE_LIMIT_REQUESTS", "1")
+    monkeypatch.setenv("RATE_LIMIT_WINDOW_SECONDS", "60")
+    get_settings.cache_clear()
+
+    try:
+        async with app.router.lifespan_context(app):
+            transport = ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test", headers={"X-API-Key": test_api_key}
+            ) as ac:
+                resp_first = await ac.get("/api/v1/ocr/limits")
+                resp_second = await ac.get("/api/v1/ocr/limits")
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
+
+    assert resp_first.status_code == 200
+    assert resp_second.status_code == 429
+    body = resp_second.json()
+    assert body["error"]["code"] == "RATE_LIMIT_EXCEEDED"
+    assert "Retry-After" in resp_second.headers
 
 
 @respx.mock

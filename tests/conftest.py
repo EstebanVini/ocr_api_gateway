@@ -11,9 +11,25 @@ from PIL import Image
 os.environ.setdefault("OCR_SPACE_API_KEY", "test-api-key")
 
 
+@pytest.fixture(scope="session")
+def _api_keys_db_path(tmp_path_factory: pytest.TempPathFactory) -> str:
+    return str(tmp_path_factory.mktemp("api_keys") / "keys.db")
+
+
+@pytest.fixture(scope="session")
+def test_api_key(_api_keys_db_path: str) -> str:
+    """API key valida, ya insertada en la DB de prueba, para usar en el header
+    X-API-Key de las peticiones de test."""
+    from app.services.api_keys import create_api_key
+
+    _, raw_key = create_api_key(_api_keys_db_path, "pytest")
+    return raw_key
+
+
 @pytest.fixture(autouse=True)
-def _env_setup(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _env_setup(monkeypatch: pytest.MonkeyPatch, _api_keys_db_path: str) -> Iterator[None]:
     monkeypatch.setenv("OCR_SPACE_API_KEY", "test-api-key")
+    monkeypatch.setenv("API_KEYS_DB_PATH", _api_keys_db_path)
     from app.config import get_settings
 
     get_settings.cache_clear()

@@ -9,14 +9,18 @@ from app.api.routes.ocr import router as ocr_router
 from app.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
+from app.core.rate_limit import SlidingWindowRateLimiter
 from app.services.ocr_client import OcrSpaceClient
-
-settings = get_settings()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
     configure_logging(settings.log_level)
+    app.state.rate_limiter = SlidingWindowRateLimiter(
+        max_requests=settings.rate_limit_requests,
+        window_seconds=settings.rate_limit_window_seconds,
+    )
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(settings.ocr_timeout_seconds),
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),

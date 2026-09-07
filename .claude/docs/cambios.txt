@@ -1,0 +1,2 @@
+esta aplicación tiene un rate limit?? Puede manejar varias peticiones al mismo tiempo?? agrega autenticación por medio de api keys que solo se puedan generar manualmente en la consola y se almacenen en una base de datos sqlite, también agrega capacidad de manejar las peticiones de manera asíncrona para evitar que se congestione la api con demasiadas
+  peticiones, también un reate limit para evitar demasiadas peticiones

@@ -10,14 +10,16 @@ Group=ocrapi
 WorkingDirectory=/opt/ocr-api-gateway
 EnvironmentFile=/opt/ocr-api-gateway/.env
 Environment=PYTHONUNBUFFERED=1
+Environment=API_KEYS_DB_PATH=/var/lib/ocr-api-gateway/api_keys.db
 ExecStart=/opt/ocr-api-gateway/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
 
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=15
 
-# Hardening: el servicio nunca escribe en disco (compresion en memoria, logs a stdout),
-# asi que corre con el filesystem en solo lectura salvo /tmp privado.
+# Hardening: el filesystem es de solo lectura salvo /tmp privado y el StateDirectory de
+# abajo, que es donde vive la unica escritura real del servicio (la DB sqlite de API
+# keys). El resto (compresion, logs) sigue siendo todo en memoria/stdout.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -25,6 +27,7 @@ ProtectHome=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
+StateDirectory=ocr-api-gateway
 
 [Install]
 WantedBy=multi-user.target

@@ -1,9 +1,11 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from app.config import Settings, get_settings
 from app.core.exceptions import RawInputTooLargeError
+from app.core.rate_limit import enforce_rate_limit
 from app.models.requests import OcrRequestParams
 from app.models.responses import CompressionInfo, FileInfo, LimitsResponse, OcrResponse, RequestEcho
 from app.services.compressor.base import compress_if_needed
@@ -12,7 +14,7 @@ from app.services.detector import detect_file_type
 from app.services.ocr_client import OcrSpaceClient, map_ocr_space_payload
 from app.services.passport_mrz import detect_passport
 
-router = APIRouter(prefix="/api/v1", tags=["ocr"])
+router = APIRouter(prefix="/api/v1", tags=["ocr"], dependencies=[Depends(enforce_rate_limit)])
 
 _UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
 
@@ -61,9 +63,12 @@ async def create_ocr(
     detected = detect_file_type(raw)
 
     if detected.ocr_space_filetype == "PDF":
-        validate_page_count(raw, settings.ocr_max_pdf_pages)
+        await run_in_threadpool(validate_page_count, raw, settings.ocr_max_pdf_pages)
 
-    result = compress_if_needed(raw, detected.ocr_space_filetype, settings)
+    # La compresion (busqueda de calidad JPEG, rasterizado de PDF, etc.) es CPU-bound
+    # y puede tomar cientos de ms a varios segundos: se corre en el threadpool para no
+    # bloquear el event loop y permitir que otras peticiones avancen en paralelo.
+    result = await run_in_threadpool(compress_if_needed, raw, detected.ocr_space_filetype, settings)
     final = detect_file_type(result.data) if result.was_compressed else detected
 
     raw_payload = await ocr_client.parse(
