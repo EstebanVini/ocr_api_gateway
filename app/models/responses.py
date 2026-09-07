@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.models.passport import PassportData
+
 
 class OCRExitCode(IntEnum):
     SUCCESS = 1
@@ -142,6 +144,7 @@ class OcrResponse(BaseModel):
     file: FileInfo
     request: RequestEcho
     ocr: OcrResult
+    passport: PassportData | None = None
     raw: dict[str, Any] | None = None
 
 

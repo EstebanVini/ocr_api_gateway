@@ -134,9 +134,64 @@ Respuesta:
     ],
     "searchable_pdf_url": null
   },
+  "passport": null,
   "raw": null
 }
 ```
+
+### Deteccion automatica de pasaporte (MRZ)
+
+Si el texto extraido contiene una zona MRZ (Machine Readable Zone, TD3, formato ICAO 9303 — las
+2 lineas de 44 caracteres al pie de la pagina de datos), el servicio la detecta con expresiones
+regulares, extrae los campos estructurados, y valida:
+
+1. **Los digitos de control del propio MRZ** (`checksum_valid`) — el algoritmo de checksum
+   estandar ICAO 9303 (pesos 7/3/1), aplicado a numero de pasaporte, fecha de nacimiento, fecha de
+   vencimiento, numero personal y el digito compuesto.
+2. **Que los datos del MRZ coincidan con el texto visible del documento** (`matches_visible_text`)
+   — nombre, apellidos, numero de pasaporte, numero de identificacion y fechas de nacimiento/
+   vencimiento. Si algo no coincide, `validation_error` explica exactamente que campo fallo, en vez
+   de fallar silenciosamente o asumir que el MRZ es siempre correcto.
+
+Si el documento no es un pasaporte (o el MRZ no se pudo leer), `passport` queda en `null` — no
+cambia nada del resto de la respuesta.
+
+```json
+{
+  "passport": {
+    "mrz": {
+      "document_code": "P",
+      "issuing_country": "ESP",
+      "nationality": "ESP",
+      "passport_number": "XDF235217",
+      "surname": "VINIEGRA PEREZ OLAGARAY",
+      "given_names": "ESTEBAN",
+      "sex": "M",
+      "date_of_birth": "2001-09-01",
+      "date_of_expiry": "2029-11-12",
+      "personal_number": "RE202407041324",
+      "checksum_valid": true,
+      "raw_line1": "P<ESPVINIEGRA<PEREZ<OLAGARAY<<ESTEBAN<<<<<<<",
+      "raw_line2": "XDF2352177ESP0109017M2911124RE20240704132446"
+    },
+    "matches_visible_text": true,
+    "validation_error": null
+  }
+}
+```
+
+Si hay una discrepancia, `matches_visible_text` pasa a `false` y `validation_error` describe cada
+campo que no calzo, por ejemplo:
+
+```json
+"validation_error": "Los datos del MRZ no coinciden con el texto visible del documento: numero de pasaporte 'XDF235217' no encontrado en el texto visible"
+```
+
+**Limitacion conocida:** la comparacion contra el texto visible es tan buena como el propio OCR de
+esa zona — si la compresion o la calidad de la foto degradan la lectura del campo visible (no del
+MRZ), se va a reportar un mismatch aunque el MRZ este perfectamente bien. Esto es intencional: el
+objetivo es señalar cuando el documento necesita revision manual, no decidir cual de las dos
+lecturas es la "correcta".
 
 ### `GET /api/v1/ocr/limits`
 

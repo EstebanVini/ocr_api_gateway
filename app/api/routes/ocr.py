@@ -10,6 +10,7 @@ from app.services.compressor.base import compress_if_needed
 from app.services.compressor.pdf import validate_page_count
 from app.services.detector import detect_file_type
 from app.services.ocr_client import OcrSpaceClient, map_ocr_space_payload
+from app.services.passport_mrz import detect_passport
 
 router = APIRouter(prefix="/api/v1", tags=["ocr"])
 
@@ -73,6 +74,7 @@ async def create_ocr(
         params=params,
     )
     ocr_result = map_ocr_space_payload(raw_payload, include_overlay=params.is_overlay_required)
+    passport = detect_passport(ocr_result.text)
 
     return OcrResponse(
         file=FileInfo(
@@ -99,5 +101,6 @@ async def create_ocr(
             searchable_pdf=params.is_create_searchable_pdf,
         ),
         ocr=ocr_result,
+        passport=passport,
         raw=raw_payload if params.include_raw else None,
     )

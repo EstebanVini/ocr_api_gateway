@@ -10,6 +10,7 @@ from app.config import Settings, get_settings
 from app.core.exceptions import CompressionFailedError
 from app.main import app
 from tests.conftest import make_image_bytes, make_low_entropy_png_bytes, make_pdf_bytes
+from tests.test_passport_mrz import _MATCHING_TEXT
 
 _ENDPOINT = "https://api.ocr.space/parse/image"
 
@@ -252,3 +253,68 @@ async def test_overlay_forced_null_when_not_requested(client: httpx.AsyncClient)
 
     assert resp.status_code == 200
     assert resp.json()["ocr"]["pages"][0]["overlay"] is None
+
+
+@respx.mock
+async def test_passport_field_is_null_for_non_passport_document(
+    client: httpx.AsyncClient,
+) -> None:
+    respx.post(_ENDPOINT).mock(return_value=httpx.Response(200, json=_success_payload()))
+
+    files = {"file": ("invoice.jpg", make_image_bytes("JPEG", size=(20, 20)), "image/jpeg")}
+    resp = await client.post("/api/v1/ocr", files=files)
+
+    assert resp.status_code == 200
+    assert resp.json()["passport"] is None
+
+
+@respx.mock
+async def test_passport_detected_and_matches_visible_text(client: httpx.AsyncClient) -> None:
+    respx.post(_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json=_success_payload(
+                ParsedResults=[
+                    {"FileParseExitCode": 1, "ParsedText": _MATCHING_TEXT, "ErrorMessage": ""}
+                ]
+            ),
+        )
+    )
+
+    files = {"file": ("passport.jpg", make_image_bytes("JPEG", size=(20, 20)), "image/jpeg")}
+    resp = await client.post("/api/v1/ocr", files=files)
+
+    assert resp.status_code == 200
+    passport = resp.json()["passport"]
+    assert passport is not None
+    assert passport["mrz"]["passport_number"] == "XDF235217"
+    assert passport["mrz"]["surname"] == "VINIEGRA PEREZ OLAGARAY"
+    assert passport["mrz"]["checksum_valid"] is True
+    assert passport["matches_visible_text"] is True
+    assert passport["validation_error"] is None
+
+
+@respx.mock
+async def test_passport_mismatch_reports_custom_validation_error(
+    client: httpx.AsyncClient,
+) -> None:
+    tampered_text = _MATCHING_TEXT.replace("XDF235217", "ZZZ999999", 1)
+    respx.post(_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json=_success_payload(
+                ParsedResults=[
+                    {"FileParseExitCode": 1, "ParsedText": tampered_text, "ErrorMessage": ""}
+                ]
+            ),
+        )
+    )
+
+    files = {"file": ("passport.jpg", make_image_bytes("JPEG", size=(20, 20)), "image/jpeg")}
+    resp = await client.post("/api/v1/ocr", files=files)
+
+    assert resp.status_code == 200  # a mismatch is reported inline, not a request failure
+    passport = resp.json()["passport"]
+    assert passport is not None
+    assert passport["matches_visible_text"] is False
+    assert "no coinciden" in passport["validation_error"]
